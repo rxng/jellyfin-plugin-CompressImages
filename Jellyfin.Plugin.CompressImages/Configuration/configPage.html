@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Compress Images</title>
+</head>
+<body>
+    <div id="CompressImagesConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button">
+        <div data-role="content">
+            <div class="content-primary">
+                <h1>Compress Images</h1>
+                <p>This plugin compresses oversized images in the Jellyfin <strong>People</strong> metadata folder
+                   using Jellyfin's built-in image encoder (SkiaSharp). No external tools required.
+                   It automatically detects the folder location from Jellyfin's internal metadata path.
+                   Only images that exceed the configured dimensions or file size are processed.</p>
+
+                <h2>Compression Settings</h2>
+                <form id="CompressImagesConfigForm">
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="MaxWidth">Max Width (px)</label>
+                        <input id="MaxWidth" name="MaxWidth" type="number" is="emby-input" min="1" max="10000" />
+                        <div class="fieldDescription">Images wider than this will be resized. Smaller images are never upscaled. Default: 600</div>
+                    </div>
+                    
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="MaxHeight">Max Height (px)</label>
+                        <input id="MaxHeight" name="MaxHeight" type="number" is="emby-input" min="1" max="10000" />
+                        <div class="fieldDescription">Images taller than this will be resized. Smaller images are never upscaled. Default: 900</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="Quality">Quality (%)</label>
+                        <input id="Quality" name="Quality" type="number" is="emby-input" min="1" max="100" />
+                        <div class="fieldDescription">JPEG/PNG encoding quality (1-100). Lower = smaller files. Default: 75</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="MaxFileSizeKB">Max File Size (KB)</label>
+                        <input id="MaxFileSizeKB" name="MaxFileSizeKB" type="number" is="emby-input" min="0" />
+                        <div class="fieldDescription">Files larger than this will be re-encoded even if dimensions are OK. Set to 0 to only check dimensions. Default: 0</div>
+                    </div>
+
+                    <div>
+                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                            <span>Save</span>
+                        </button>
+                    </div>
+                </form>
+
+                <div id="lastRunInfo" style="margin-top: 1.5em; padding: 0.6em 1em; background: #222; border: 1px solid #333; border-radius: 4px; font-size: 0.9em; color: #aaa;">Last compression run: <span id="lastRunValue">loading...</span></div>
+
+                <h2 style="margin-top: 2em;">Preview &amp; Test</h2>
+                <p>Scan the People metadata folder to see which images exceed your configured limits and would be compressed on the next scheduled run.</p>
+                <div>
+                    <button id="btnPreview" is="emby-button" type="button" class="raised emby-button" style="margin-bottom: 1em;">
+                        <span>Preview Oversized Images</span>
+                    </button>
+                </div>
+                <div id="previewOutput" style="background: #1a1a1a; color: #d4d4d4; border: 1px solid #333; border-radius: 4px; padding: 1em; font-family: monospace; font-size: 0.85em; white-space: pre-wrap; max-height: 400px; overflow-y: auto; display: none;"></div>
+            </div>
+        </div>
+        <script type="text/javascript">
+            var CompressImagesConfig = {
+                pluginUniqueId: 'A1B2C3D4-E5F6-4789-8A9B-C1D2E3F4A5B6'
+            };
+
+            function formatBytes(bytes) {
+                if (bytes === 0) return '0 B';
+                var k = 1024;
+                var sizes = ['B', 'KB', 'MB', 'GB'];
+                var i = Math.floor(Math.log(bytes) / Math.log(k));
+                return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
+            }
+
+            document.querySelector('#CompressImagesConfigPage')
+                .addEventListener('pageshow', function() {
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(CompressImagesConfig.pluginUniqueId).then(function (config) {
+                        document.querySelector('#MaxWidth').value = config.MaxWidth;
+                        document.querySelector('#MaxHeight').value = config.MaxHeight;
+                        document.querySelector('#Quality').value = config.Quality;
+                        document.querySelector('#MaxFileSizeKB').value = config.MaxFileSizeKB;
+                        document.querySelector('#lastRunValue').textContent = config.LastRunUtc
+                            ? new Date(config.LastRunUtc).toLocaleString()
+                            : 'Never (settings were changed or task has not run yet)';
+                        Dashboard.hideLoadingMsg();
+                    }, function(err) {
+                        Dashboard.hideLoadingMsg();
+                        document.querySelector('#lastRunValue').textContent = 'Error loading config (HTTP ' + (err && err.status ? err.status : '?') + '). Check Jellyfin logs.';
+                        console.error('CompressImages: Failed to load plugin config', err);
+                    });
+                });
+
+            document.querySelector('#CompressImagesConfigForm')
+                .addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(CompressImagesConfig.pluginUniqueId).then(function (config) {
+                        config.MaxWidth = parseInt(document.querySelector('#MaxWidth').value, 10);
+                        config.MaxHeight = parseInt(document.querySelector('#MaxHeight').value, 10);
+                        config.Quality = parseInt(document.querySelector('#Quality').value, 10);
+                        config.MaxFileSizeKB = parseInt(document.querySelector('#MaxFileSizeKB').value, 10);
+                        config.LastRunUtc = null;
+                        ApiClient.updatePluginConfiguration(CompressImagesConfig.pluginUniqueId, config).then(function (result) {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                        });
+                    });
+                    return false;
+                });
+
+            document.querySelector('#btnPreview').addEventListener('click', function() {
+                var output = document.querySelector('#previewOutput');
+                output.style.display = 'block';
+                output.textContent = 'Calling CompressImages/Preview API...\n';
+
+                var url = ApiClient.getUrl('CompressImages/Preview');
+                output.textContent += 'URL: ' + url + '\n';
+
+                ApiClient.ajax({
+                    type: 'GET',
+                    url: url,
+                    dataType: 'json'
+                }).then(function(result) {
+                    var lines = [];
+                    lines.push('=== Compress Images Preview ===');
+                    lines.push('');
+                    lines.push('People folder: ' + result.PeoplePath);
+                    lines.push('Folder exists: ' + (result.Exists ? 'Yes' : 'NO - folder not found!'));
+                    lines.push('');
+
+                    if (!result.Exists) {
+                        lines.push('The People metadata folder was not found.');
+                        lines.push('This is normal if no library scans have been run yet,');
+                        lines.push('or if people metadata downloading is disabled.');
+                        output.textContent = lines.join('\n');
+                        return;
+                    }
+
+                    lines.push('Last compression run:     ' + (result.LastRunUtc ? new Date(result.LastRunUtc).toLocaleString() : 'Never'));
+                    lines.push('Total images in folder:   ' + result.TotalImageCount + '  (' + formatBytes(result.TotalSizeBytes) + ')');
+                    lines.push('Oversized images:         ' + result.PendingImageCount + '  (' + formatBytes(result.PendingSizeBytes) + ')');
+                    lines.push('');
+
+                    if (result.PendingImageCount === 0) {
+                        lines.push('All images are within the configured limits. Nothing to compress.');
+                    } else {
+                        lines.push('--- Sample oversized images (up to 20) ---');
+                        lines.push('');
+                        for (var i = 0; i < result.SampleFiles.length; i++) {
+                            var f = result.SampleFiles[i];
+                            var dimStr = f.Width > 0 ? f.Width + 'x' + f.Height : '?x?';
+                            lines.push('  ' + f.RelativePath + '  ' + dimStr + '  ' + formatBytes(f.SizeBytes));
+                        }
+                        if (result.PendingImageCount > result.SampleFiles.length) {
+                            lines.push('  ... and ' + (result.PendingImageCount - result.SampleFiles.length) + ' more');
+                        }
+                    }
+
+                    output.textContent = lines.join('\n');
+                }, function(err) {
+                    var msg = 'Error fetching preview.\n\n';
+                    if (err && err.status) {
+                        msg += 'HTTP Status: ' + err.status + ' ' + (err.statusText || '') + '\n';
+                    }
+                    if (err && err.status === 401) {
+                        msg += 'You are not authenticated. Try refreshing the page and logging in again.\n';
+                    } else if (err && err.status === 403) {
+                        msg += 'Access denied. This endpoint requires administrator privileges.\n';
+                    } else if (err && err.status === 500) {
+                        msg += 'Server error. Check the Jellyfin server log for details.\n';
+                    } else if (err && err.status === 0) {
+                        msg += 'Network error or request timed out. The scan may still be running on the server.\n';
+                        msg += 'Check the Jellyfin server log for progress messages from CompressImages.\n';
+                    } else {
+                        msg += 'Details: ' + JSON.stringify(err, null, 2) + '\n';
+                    }
+                    output.textContent = msg;
+                });
+            });
+        </script>
+    </div>
+</body>
+</html>

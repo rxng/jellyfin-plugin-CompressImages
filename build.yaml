@@ -1,0 +1,18 @@
+---
+name: "Compress Images"
+guid: "a1b2c3d4-e5f6-4789-8a9b-c1d2e3f4a5b6"
+version: "1.0.0.0"
+targetAbi: "10.11.0.0"
+framework: "net9.0"
+overview: "Automatically compresses people metadata images to reduce disk usage."
+description: >
+  Periodically scans the Jellyfin People metadata folder and compresses
+  oversized images using Jellyfin's built-in image encoder (SkiaSharp).
+  Configurable max dimensions, quality, and file size threshold.
+  No external tools required.
+category: "General"
+owner: "rxng"
+artifacts:
+- "Jellyfin.Plugin.CompressImages.dll"
+changelog: >
+  Initial release.
