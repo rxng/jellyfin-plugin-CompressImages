@@ -39,11 +39,6 @@ public class PreviewResult
     public long PendingSizeBytes { get; set; }
 
     /// <summary>
-    /// Gets or sets the UTC timestamp of the last successful compression run.
-    /// </summary>
-    public DateTime? LastRunUtc { get; set; }
-
-    /// <summary>
     /// Gets sample file entries.
     /// </summary>
     public IReadOnlyList<SampleFile> SampleFiles { get; init; } = [];

@@ -191,7 +191,6 @@ public class CompressImagesController : ControllerBase
                 PendingImageCount = oversized.Count,
                 TotalSizeBytes = totalSize,
                 PendingSizeBytes = oversizedSize,
-                LastRunUtc = config.LastRunUtc,
                 SampleFiles = samples
             };
             await SendLine(result, cancellationToken).ConfigureAwait(false);
