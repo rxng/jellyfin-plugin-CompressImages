@@ -30,6 +30,7 @@ jobs:
           sed -i "s|<Version>.*</Version>|<Version>${{ steps.version.outputs.version }}</Version>|" Directory.Build.props
           sed -i "s|<AssemblyVersion>.*</AssemblyVersion>|<AssemblyVersion>${{ steps.version.outputs.version }}</AssemblyVersion>|" Directory.Build.props
           sed -i "s|<FileVersion>.*</FileVersion>|<FileVersion>${{ steps.version.outputs.version }}</FileVersion>|" Directory.Build.props
+          sed -i "s|^version:.*|version: \"${{ steps.version.outputs.version }}\"|" build.yaml
 
       - name: Build
         run: dotnet publish --configuration=Release Jellyfin.Plugin.CompressImages.sln

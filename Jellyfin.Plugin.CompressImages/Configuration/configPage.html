@@ -50,10 +50,10 @@
                 <div id="lastRunInfo" style="margin-top: 1.5em; padding: 0.6em 1em; background: #222; border: 1px solid #333; border-radius: 4px; font-size: 0.9em; color: #aaa;">Last compression run: <span id="lastRunValue">loading...</span></div>
 
                 <h2 style="margin-top: 2em;">Preview &amp; Test</h2>
-                <p>Scan the People metadata folder to see which images exceed your configured limits and would be compressed on the next scheduled run.</p>
+                <p>Scan the People metadata folder to list which images exceed your configured limits and would be compressed on the next scheduled run.</p>
                 <div>
                     <button id="btnPreview" is="emby-button" type="button" class="raised emby-button" style="margin-bottom: 1em;">
-                        <span>Preview Oversized Images</span>
+                        <span>Identify Oversized Images</span>
                     </button>
                 </div>
                 <div id="previewOutput" style="background: #1a1a1a; color: #d4d4d4; border: 1px solid #333; border-radius: 4px; padding: 1em; font-family: monospace; font-size: 0.85em; white-space: pre-wrap; max-height: 400px; overflow-y: auto; display: none;"></div>
@@ -108,56 +108,112 @@
                     return false;
                 });
 
+            function displayResult(result, output) {
+                var lines = [];
+                lines.push('=== Compress Images Preview ===');
+                lines.push('');
+                lines.push('People folder: ' + result.PeoplePath);
+                lines.push('Folder exists: ' + (result.Exists ? 'Yes' : 'NO - folder not found!'));
+                lines.push('');
+
+                if (!result.Exists) {
+                    lines.push('The People metadata folder was not found.');
+                    lines.push('This is normal if no library scans have been run yet,');
+                    lines.push('or if people metadata downloading is disabled.');
+                    output.textContent = lines.join('\n');
+                    return;
+                }
+
+                lines.push('Last compression run:     ' + (result.LastRunUtc ? new Date(result.LastRunUtc).toLocaleString() : 'Never'));
+                lines.push('Total images in folder:   ' + result.TotalImageCount + '  (' + formatBytes(result.TotalSizeBytes) + ')');
+                lines.push('Oversized images:         ' + result.PendingImageCount + '  (' + formatBytes(result.PendingSizeBytes) + ')');
+                lines.push('');
+
+                if (result.PendingImageCount === 0) {
+                    lines.push('All images are within the configured limits. Nothing to compress.');
+                } else {
+                    lines.push('--- Sample oversized images (up to 20) ---');
+                    lines.push('');
+                    for (var i = 0; i < result.SampleFiles.length; i++) {
+                        var f = result.SampleFiles[i];
+                        var dimStr = f.Width > 0 ? f.Width + 'x' + f.Height : '?x?';
+                        lines.push('  ' + f.RelativePath + '  ' + dimStr + '  ' + formatBytes(f.SizeBytes));
+                    }
+                    if (result.PendingImageCount > result.SampleFiles.length) {
+                        lines.push('  ... and ' + (result.PendingImageCount - result.SampleFiles.length) + ' more');
+                    }
+                }
+
+                output.textContent = lines.join('\n');
+            }
+
             document.querySelector('#btnPreview').addEventListener('click', function() {
                 var output = document.querySelector('#previewOutput');
+                var btn = document.querySelector('#btnPreview');
                 output.style.display = 'block';
-                output.textContent = 'Calling CompressImages/Preview API...\n';
+                output.textContent = 'Scanning People folder...\n';
+                btn.disabled = true;
 
                 var url = ApiClient.getUrl('CompressImages/Preview');
-                output.textContent += 'URL: ' + url + '\n';
+                var token = ApiClient.accessToken();
+                if (token) {
+                    url += (url.indexOf('?') >= 0 ? '&' : '?') + 'api_key=' + encodeURIComponent(token);
+                }
 
-                ApiClient.ajax({
-                    type: 'GET',
-                    url: url,
-                    dataType: 'json'
-                }).then(function(result) {
-                    var lines = [];
-                    lines.push('=== Compress Images Preview ===');
-                    lines.push('');
-                    lines.push('People folder: ' + result.PeoplePath);
-                    lines.push('Folder exists: ' + (result.Exists ? 'Yes' : 'NO - folder not found!'));
-                    lines.push('');
+                fetch(url).then(function(response) {
+                    if (!response.ok) {
+                        throw { status: response.status, statusText: response.statusText };
+                    }
+                    var reader = response.body.getReader();
+                    var decoder = new TextDecoder();
+                    var buffer = '';
 
-                    if (!result.Exists) {
-                        lines.push('The People metadata folder was not found.');
-                        lines.push('This is normal if no library scans have been run yet,');
-                        lines.push('or if people metadata downloading is disabled.');
-                        output.textContent = lines.join('\n');
-                        return;
+                    function processChunk(chunk) {
+                        if (chunk.done) {
+                            btn.disabled = false;
+                            if (buffer.trim()) {
+                                try {
+                                    var msg = JSON.parse(buffer);
+                                    handleMsg(msg);
+                                } catch(e) {}
+                            }
+                            return;
+                        }
+
+                        buffer += decoder.decode(chunk.value, { stream: true });
+                        var lines = buffer.split('\n');
+                        buffer = lines.pop();
+
+                        for (var i = 0; i < lines.length; i++) {
+                            if (lines[i].trim()) {
+                                try {
+                                    handleMsg(JSON.parse(lines[i]));
+                                } catch (e) {
+                                    console.error('CompressImages: Failed to parse', lines[i], e);
+                                }
+                            }
+                        }
+
+                        return reader.read().then(processChunk);
                     }
 
-                    lines.push('Last compression run:     ' + (result.LastRunUtc ? new Date(result.LastRunUtc).toLocaleString() : 'Never'));
-                    lines.push('Total images in folder:   ' + result.TotalImageCount + '  (' + formatBytes(result.TotalSizeBytes) + ')');
-                    lines.push('Oversized images:         ' + result.PendingImageCount + '  (' + formatBytes(result.PendingSizeBytes) + ')');
-                    lines.push('');
-
-                    if (result.PendingImageCount === 0) {
-                        lines.push('All images are within the configured limits. Nothing to compress.');
-                    } else {
-                        lines.push('--- Sample oversized images (up to 20) ---');
-                        lines.push('');
-                        for (var i = 0; i < result.SampleFiles.length; i++) {
-                            var f = result.SampleFiles[i];
-                            var dimStr = f.Width > 0 ? f.Width + 'x' + f.Height : '?x?';
-                            lines.push('  ' + f.RelativePath + '  ' + dimStr + '  ' + formatBytes(f.SizeBytes));
-                        }
-                        if (result.PendingImageCount > result.SampleFiles.length) {
-                            lines.push('  ... and ' + (result.PendingImageCount - result.SampleFiles.length) + ' more');
+                    function handleMsg(msg) {
+                        if (msg.Status) {
+                            output.textContent = msg.Status + '\n';
+                        } else if (msg.Checked !== undefined) {
+                            var pct = Math.round(msg.Checked / msg.Total * 100);
+                            output.textContent = 'Scanning: ' + msg.Checked + ' / ' + msg.Total + ' images checked (' + pct + '%), ' + msg.Oversized + ' oversized so far\n';
+                        } else if (msg.Error) {
+                            output.textContent = 'Error: ' + msg.Error + '\n';
+                            btn.disabled = false;
+                        } else if (msg.PeoplePath !== undefined) {
+                            displayResult(msg, output);
                         }
                     }
 
-                    output.textContent = lines.join('\n');
-                }, function(err) {
+                    return reader.read().then(processChunk);
+                }).catch(function(err) {
+                    btn.disabled = false;
                     var msg = 'Error fetching preview.\n\n';
                     if (err && err.status) {
                         msg += 'HTTP Status: ' + err.status + ' ' + (err.statusText || '') + '\n';
@@ -168,11 +224,8 @@
                         msg += 'Access denied. This endpoint requires administrator privileges.\n';
                     } else if (err && err.status === 500) {
                         msg += 'Server error. Check the Jellyfin server log for details.\n';
-                    } else if (err && err.status === 0) {
-                        msg += 'Network error or request timed out. The scan may still be running on the server.\n';
-                        msg += 'Check the Jellyfin server log for progress messages from CompressImages.\n';
                     } else {
-                        msg += 'Details: ' + JSON.stringify(err, null, 2) + '\n';
+                        msg += 'Details: ' + (err.message || JSON.stringify(err, null, 2)) + '\n';
                     }
                     output.textContent = msg;
                 });

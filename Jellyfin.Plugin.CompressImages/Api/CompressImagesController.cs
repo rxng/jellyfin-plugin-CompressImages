@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.Mime;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using MediaBrowser.Common.Api;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Drawing;
@@ -19,7 +21,6 @@ namespace Jellyfin.Plugin.CompressImages.Api;
 [ApiController]
 [Route("CompressImages")]
 [Authorize(Policy = Policies.RequiresElevation)]
-[Produces(MediaTypeNames.Application.Json)]
 public class CompressImagesController : ControllerBase
 {
     private static readonly string[] _imageExtensions = [".jpg", ".jpeg", ".png"];
@@ -45,56 +46,66 @@ public class CompressImagesController : ControllerBase
     }
 
     /// <summary>
-    /// Gets a preview of images that would be processed by the compression task.
+    /// Streams a preview of images that would be processed by the compression task.
+    /// Returns newline-delimited JSON: progress lines followed by the final result.
     /// </summary>
     /// <param name="sampleLimit">Maximum number of sample file paths to return.</param>
-    /// <returns>Preview info including count, total size, and sample paths.</returns>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A streaming NDJSON response.</returns>
     [HttpGet("Preview")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    public ActionResult<PreviewResult> GetPreview([FromQuery] int sampleLimit = 20)
+    public async Task GetPreview([FromQuery] int sampleLimit = 20, CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("CompressImages: Preview endpoint called");
+        Response.ContentType = "application/x-ndjson";
+        Response.Headers.CacheControl = "no-cache";
+        Response.Headers["X-Accel-Buffering"] = "no";
 
         try
         {
             var peoplePath = GetPeoplePath();
-            _logger.LogInformation("CompressImages: People path resolved to {Path}", peoplePath ?? "null");
+            _logger.LogInformation("CompressImages: Preview endpoint called, people path: {Path}", peoplePath ?? "null");
 
             if (peoplePath is null || !Directory.Exists(peoplePath))
             {
-                _logger.LogWarning("CompressImages: People folder not found at {Path}", peoplePath ?? "null");
-                return Ok(new PreviewResult
+                var notFound = new PreviewResult
                 {
                     PeoplePath = peoplePath ?? "Unknown",
                     Exists = false
-                });
+                };
+                await SendLine(notFound, cancellationToken).ConfigureAwait(false);
+                return;
             }
+
+            await SendLine(new { Status = "Enumerating image files..." }, cancellationToken).ConfigureAwait(false);
 
             var config = Plugin.Instance!.Configuration;
             var maxWidth = Math.Clamp(config.MaxWidth, 1, 10000);
             var maxHeight = Math.Clamp(config.MaxHeight, 1, 10000);
             var maxFileSizeBytes = config.MaxFileSizeKB > 0 ? config.MaxFileSizeKB * 1024L : long.MaxValue;
 
-            _logger.LogInformation("CompressImages: Config - MaxWidth={MaxWidth}, MaxHeight={MaxHeight}, MaxFileSizeKB={MaxFileSizeKB}", maxWidth, maxHeight, config.MaxFileSizeKB);
-
             var allImages = Directory.EnumerateFiles(peoplePath, "*.*", SearchOption.AllDirectories)
                 .Where(f => _imageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
                 .ToList();
 
-            _logger.LogInformation("CompressImages: Found {Count} total images in {Path}", allImages.Count, peoplePath);
+            _logger.LogInformation("CompressImages: Found {Count} images in {Path}", allImages.Count, peoplePath);
+
+            await SendLine(new { Status = "Found " + allImages.Count + " images. Checking dimensions..." }, cancellationToken).ConfigureAwait(false);
 
             var oversized = new List<string>();
+            var dimCache = new Dictionary<string, (int Width, int Height)>();
             long totalSize = 0;
             long oversizedSize = 0;
             var checked_ = 0;
 
             foreach (var file in allImages)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 try
                 {
                     var info = new FileInfo(file);
                     if (info.Length == 0)
                     {
+                        checked_++;
                         continue;
                     }
 
@@ -108,6 +119,7 @@ public class CompressImagesController : ControllerBase
                     else
                     {
                         var dims = _imageEncoder.GetImageSize(file);
+                        dimCache[file] = (dims.Width, dims.Height);
                         if (dims.Width > maxWidth || dims.Height > maxHeight)
                         {
                             needsCompression = true;
@@ -126,13 +138,13 @@ public class CompressImagesController : ControllerBase
                 }
 
                 checked_++;
-                if (checked_ % 500 == 0)
+                if (checked_ % 200 == 0)
                 {
-                    _logger.LogInformation("CompressImages: Checked {Checked}/{Total} images, {Oversized} oversized so far", checked_, allImages.Count, oversized.Count);
+                    _logger.LogInformation("CompressImages: Checked {Checked}/{Total}, {Oversized} oversized", checked_, allImages.Count, oversized.Count);
+                    var progress = new { Checked = checked_, Total = allImages.Count, Oversized = oversized.Count };
+                    await SendLine(progress, cancellationToken).ConfigureAwait(false);
                 }
             }
-
-            _logger.LogInformation("CompressImages: Scan complete. {Oversized}/{Total} oversized, totalSize={TotalSize}, oversizedSize={OversizedSize}", oversized.Count, allImages.Count, totalSize, oversizedSize);
 
             sampleLimit = Math.Clamp(sampleLimit, 1, 200);
 
@@ -142,15 +154,23 @@ public class CompressImagesController : ControllerBase
                 {
                     var info = new FileInfo(f);
                     int width = 0, height = 0;
-                    try
+                    if (dimCache.TryGetValue(f, out var cached))
                     {
-                        var dims = _imageEncoder.GetImageSize(f);
-                        width = dims.Width;
-                        height = dims.Height;
+                        width = cached.Width;
+                        height = cached.Height;
                     }
-                    catch
+                    else
                     {
-                        // Dimensions unavailable
+                        try
+                        {
+                            var dims = _imageEncoder.GetImageSize(f);
+                            width = dims.Width;
+                            height = dims.Height;
+                        }
+                        catch
+                        {
+                            // Dimensions unavailable
+                        }
                     }
 
                     return new SampleFile
@@ -163,7 +183,7 @@ public class CompressImagesController : ControllerBase
                 })
                 .ToList();
 
-            return Ok(new PreviewResult
+            var result = new PreviewResult
             {
                 PeoplePath = peoplePath,
                 Exists = true,
@@ -173,13 +193,38 @@ public class CompressImagesController : ControllerBase
                 PendingSizeBytes = oversizedSize,
                 LastRunUtc = config.LastRunUtc,
                 SampleFiles = samples
-            });
+            };
+            await SendLine(result, cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation(
+                "CompressImages: Preview complete. {Oversized}/{Total} oversized, totalSize={TotalSize}, oversizedSize={OversizedSize}",
+                oversized.Count,
+                allImages.Count,
+                totalSize,
+                oversizedSize);
+        }
+        catch (OperationCanceledException)
+        {
+            // Client disconnected
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "CompressImages: Preview failed with exception");
-            throw;
+            try
+            {
+                await SendLine(new { Error = ex.Message }, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Response may already be closed
+            }
         }
+    }
+
+    private async Task SendLine(object data, CancellationToken cancellationToken)
+    {
+        var json = JsonSerializer.Serialize(data);
+        await Response.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
+        await Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private string? GetPeoplePath()

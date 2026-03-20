@@ -71,7 +71,7 @@ public class CompressTask : IScheduledTask
         var maxFileSizeBytes = config.MaxFileSizeKB > 0 ? config.MaxFileSizeKB * 1024L : long.MaxValue;
 
         var lastRun = config.LastRunUtc;
-        var files = FindOversizedImages(peoplePath, maxWidth, maxHeight, maxFileSizeBytes, lastRun);
+        var files = FindOversizedImages(peoplePath, maxWidth, maxHeight, maxFileSizeBytes, lastRun, cancellationToken);
 
         if (files.Count == 0)
         {
@@ -106,10 +106,16 @@ public class CompressTask : IScheduledTask
                 failed++;
             }
 
-            progress.Report((double)(processed + failed) / files.Count * 100);
+            var done = processed + failed;
+            if (done % 100 == 0 || done == files.Count)
+            {
+                _logger.LogInformation("CompressImages: Compressed {Done}/{Total} images ({Processed} OK, {Failed} failed)", done, files.Count, processed, failed);
+            }
+
+            progress.Report((double)done / files.Count * 100);
         }
 
-        _logger.LogInformation("Compression complete. Processed: {Processed}, Failed: {Failed}", processed, failed);
+        _logger.LogInformation("CompressImages: Compression complete. Processed: {Processed}, Failed: {Failed}", processed, failed);
 
         config.LastRunUtc = DateTime.UtcNow;
         Plugin.Instance!.SaveConfiguration();
@@ -164,7 +170,7 @@ public class CompressTask : IScheduledTask
         }
     }
 
-    private List<string> FindOversizedImages(string peoplePath, int maxWidth, int maxHeight, long maxFileSizeBytes, DateTime? since)
+    private List<string> FindOversizedImages(string peoplePath, int maxWidth, int maxHeight, long maxFileSizeBytes, DateTime? since, CancellationToken cancellationToken)
     {
         var candidates = Directory.EnumerateFiles(peoplePath, "*.*", SearchOption.AllDirectories)
             .Where(f => _imageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()));
@@ -175,9 +181,28 @@ public class CompressTask : IScheduledTask
             candidates = candidates.Where(f => File.GetLastWriteTimeUtc(f) > cutoff);
         }
 
-        return candidates
-            .Where(f => IsOversized(f, maxWidth, maxHeight, maxFileSizeBytes))
-            .ToList();
+        var candidateList = candidates.ToList();
+        _logger.LogInformation("CompressImages: Scanning {Count} candidate images for oversized files", candidateList.Count);
+
+        var result = new List<string>();
+        var checked_ = 0;
+        foreach (var f in candidateList)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (IsOversized(f, maxWidth, maxHeight, maxFileSizeBytes))
+            {
+                result.Add(f);
+            }
+
+            checked_++;
+            if (checked_ % 500 == 0)
+            {
+                _logger.LogInformation("CompressImages: Scanned {Checked}/{Total} images, {Oversized} oversized so far", checked_, candidateList.Count, result.Count);
+            }
+        }
+
+        return result;
     }
 
     private bool CompressImage(string path, int maxWidth, int maxHeight, int quality)
