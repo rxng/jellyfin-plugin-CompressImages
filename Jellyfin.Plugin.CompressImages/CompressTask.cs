@@ -80,6 +80,7 @@ public class CompressTask : IScheduledTask
 
         var files = FindOversizedImages(peoplePath, maxWidth, maxHeight, maxFileSizeBytes, cancellationToken);
 
+        
         if (files.Count == 0)
         {
             _logger.LogInformation("No oversized images found in {Path}", peoplePath);
@@ -99,6 +100,8 @@ public class CompressTask : IScheduledTask
         var skipped = 0;
         var failed = 0;
 
+        var skippedFiles = new List<string>();
+
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -111,6 +114,7 @@ public class CompressTask : IScheduledTask
                     break;
                 case CompressResult.Skipped:
                     skipped++;
+                    skippedFiles.Add(file);
                     break;
                 case CompressResult.Failed:
                     failed++;
@@ -137,6 +141,18 @@ public class CompressTask : IScheduledTask
             compressed,
             skipped,
             failed);
+
+        foreach (var skippedFile in skippedFiles.Take(20))
+        {
+            _logger.LogInformation("CompressImages: Skipped {Path}", skippedFile);
+        }
+
+        if (skippedFiles.Count > 20)
+        {
+            _logger.LogInformation(
+                "CompressImages: {Count} additional skipped files not shown",
+                skippedFiles.Count - 20);
+        }
 
         progress.Report(100);
         return Task.CompletedTask;

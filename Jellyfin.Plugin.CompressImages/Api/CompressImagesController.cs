@@ -71,7 +71,7 @@ public class CompressImagesController : ControllerBase
                     PeoplePath = peoplePath ?? "Unknown",
                     Exists = false
                 };
-                await SendLine(notFound, cancellationToken).ConfigureAwait(false);
+                await SendLine(new { Error = "Preview failed." }, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -136,7 +136,7 @@ public class CompressImagesController : ControllerBase
                 }
 
                 checked_++;
-                if (checked_ % 200 == 0)
+                if (checked_ % 500 == 0)
                 {
                     _logger.LogInformation("CompressImages: Checked {Checked}/{Total}, {Oversized} oversized", checked_, allImages.Count, oversized.Count);
                     var progress = new { Checked = checked_, Total = allImages.Count, Oversized = oversized.Count };
