@@ -50,20 +50,21 @@ jobs:
           files: compress-images-${{ github.ref_name }}.zip
           generate_release_notes: true
 
-      - name: Update manifest on dist branch
+      - name: Update manifest.json
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin dist || true
-          git checkout dist 2>/dev/null || git checkout --orphan dist
-          git rm -rf . 2>/dev/null || true
-          git checkout origin/master -- manifest.json
           jq --arg ver "${{ steps.version.outputs.version }}" \
              --arg url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/compress-images-${{ github.ref_name }}.zip" \
              --arg md5 "${{ steps.checksum.outputs.md5 }}" \
              --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
              '.[0].versions = [{"version": $ver, "changelog": ("Release " + $ver), "targetAbi": "10.11.0.0", "sourceUrl": $url, "checksum": $md5, "timestamp": $ts}] + [.[0].versions[] | select(.version != $ver)]' \
              manifest.json > manifest.tmp && mv manifest.tmp manifest.json
+
+      - name: Commit updated manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin master
+          git checkout master
           git add manifest.json
           git commit -m "Update manifest.json for ${{ github.ref_name }}" || true
-          git push origin dist
+          git push origin master
