@@ -50,7 +50,7 @@ public class CompressTask : IScheduledTask
     public string Description => "Compresses and resizes oversized images in the People metadata folder using Jellyfin's built-in image encoder.";
 
     /// <inheritdoc />
-    public string Category => "Maintenance";
+    public string Category => "Image Compressor";
 
     /// <inheritdoc />
     public Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
@@ -87,32 +87,38 @@ public class CompressTask : IScheduledTask
             maxHeight,
             quality);
 
-        var processed = 0;
+        var compressed = 0;
+        var skipped = 0;
         var failed = 0;
 
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (CompressImage(file, maxWidth, maxHeight, quality))
+            var result = CompressImage(file, maxWidth, maxHeight, quality);
+            switch (result)
             {
-                processed++;
-            }
-            else
-            {
-                failed++;
+                case CompressResult.Compressed:
+                    compressed++;
+                    break;
+                case CompressResult.Skipped:
+                    skipped++;
+                    break;
+                case CompressResult.Failed:
+                    failed++;
+                    break;
             }
 
-            var done = processed + failed;
+            var done = compressed + skipped + failed;
             if (done % 100 == 0 || done == files.Count)
             {
-                _logger.LogInformation("CompressImages: Compressed {Done}/{Total} images ({Processed} OK, {Failed} failed)", done, files.Count, processed, failed);
+                _logger.LogInformation("CompressImages: Processed {Done}/{Total} images ({Compressed} compressed, {Skipped} skipped, {Failed} failed)", done, files.Count, compressed, skipped, failed);
             }
 
             progress.Report((double)done / files.Count * 100);
         }
 
-        _logger.LogInformation("CompressImages: Compression complete. Processed: {Processed}, Failed: {Failed}", processed, failed);
+        _logger.LogInformation("CompressImages: Complete. Compressed: {Compressed}, Skipped (already optimal): {Skipped}, Failed: {Failed}", compressed, skipped, failed);
 
         progress.Report(100);
         return Task.CompletedTask;
@@ -125,8 +131,8 @@ public class CompressTask : IScheduledTask
         [
             new TaskTriggerInfo
             {
-                Type = TaskTriggerInfoType.IntervalTrigger,
-                IntervalTicks = TimeSpan.FromHours(24).Ticks
+                Type = TaskTriggerInfoType.DailyTrigger,
+                TimeOfDayTicks = TimeSpan.FromHours(5).Ticks
             }
         ];
     }
@@ -192,7 +198,7 @@ public class CompressTask : IScheduledTask
         return result;
     }
 
-    private bool CompressImage(string path, int maxWidth, int maxHeight, int quality)
+    private CompressResult CompressImage(string path, int maxWidth, int maxHeight, int quality)
     {
         try
         {
@@ -226,22 +232,16 @@ public class CompressTask : IScheduledTask
                 // If encoder returned original path unchanged, no compression was needed
                 if (string.Equals(result, path, StringComparison.OrdinalIgnoreCase))
                 {
-                    return true;
+                    _logger.LogDebug("Skipping {Path}: encoder returned original path (no-op)", path);
+                    return CompressResult.Skipped;
                 }
 
-                // Only replace if the compressed file is actually smaller
                 var originalSize = new FileInfo(path).Length;
                 var compressedSize = new FileInfo(tempPath).Length;
 
-                if (compressedSize >= originalSize)
-                {
-                    _logger.LogDebug("Skipping {Path}: compressed size ({Compressed}) >= original ({Original})", path, compressedSize, originalSize);
-                    return true;
-                }
-
                 File.Move(tempPath, path, overwrite: true);
-                _logger.LogDebug("Compressed {Path}: {Original} -> {Compressed}", path, originalSize, compressedSize);
-                return true;
+                _logger.LogInformation("Compressed {Path}: {Original} -> {Compressed} bytes", path, originalSize, compressedSize);
+                return CompressResult.Compressed;
             }
             finally
             {
@@ -260,7 +260,14 @@ public class CompressTask : IScheduledTask
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to compress {Path}", path);
-            return false;
+            return CompressResult.Failed;
         }
+    }
+
+    private enum CompressResult
+    {
+        Compressed,
+        Skipped,
+        Failed
     }
 }
