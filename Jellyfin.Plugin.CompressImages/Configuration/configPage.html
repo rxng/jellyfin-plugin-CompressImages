@@ -31,7 +31,7 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="Quality">Quality (%)</label>
                         <input id="Quality" name="Quality" type="number" is="emby-input" min="1" max="100" />
-                        <div class="fieldDescription">JPEG/PNG encoding quality (1-100). Lower = smaller files. Default: 75</div>
+                        <div class="fieldDescription">JPEG/PNG encoding quality (1-100). Lower = smaller files. Default: 80</div>
                     </div>
 
                     <div class="inputContainer">
@@ -46,8 +46,6 @@
                         </button>
                     </div>
                 </form>
-
-                <div id="lastRunInfo" style="margin-top: 1.5em; padding: 0.6em 1em; background: #222; border: 1px solid #333; border-radius: 4px; font-size: 0.9em; color: #aaa;">Last compression run: <span id="lastRunValue">loading...</span></div>
 
                 <h2 style="margin-top: 2em;">Preview &amp; Test</h2>
                 <p>Scan the People metadata folder to list which images exceed your configured limits and would be compressed on the next scheduled run.</p>
@@ -80,13 +78,9 @@
                         document.querySelector('#MaxHeight').value = config.MaxHeight;
                         document.querySelector('#Quality').value = config.Quality;
                         document.querySelector('#MaxFileSizeKB').value = config.MaxFileSizeKB;
-                        document.querySelector('#lastRunValue').textContent = config.LastRunUtc
-                            ? new Date(config.LastRunUtc).toLocaleString()
-                            : 'Never (settings were changed or task has not run yet)';
                         Dashboard.hideLoadingMsg();
                     }, function(err) {
                         Dashboard.hideLoadingMsg();
-                        document.querySelector('#lastRunValue').textContent = 'Error loading config (HTTP ' + (err && err.status ? err.status : '?') + '). Check Jellyfin logs.';
                         console.error('CompressImages: Failed to load plugin config', err);
                     });
                 });
@@ -100,7 +94,6 @@
                         config.MaxHeight = parseInt(document.querySelector('#MaxHeight').value, 10);
                         config.Quality = parseInt(document.querySelector('#Quality').value, 10);
                         config.MaxFileSizeKB = parseInt(document.querySelector('#MaxFileSizeKB').value, 10);
-                        config.LastRunUtc = null;
                         ApiClient.updatePluginConfiguration(CompressImagesConfig.pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
                         });
@@ -124,7 +117,6 @@
                     return;
                 }
 
-                lines.push('Last compression run:     ' + (result.LastRunUtc ? new Date(result.LastRunUtc).toLocaleString() : 'Never'));
                 lines.push('Total images in folder:   ' + result.TotalImageCount + '  (' + formatBytes(result.TotalSizeBytes) + ')');
                 lines.push('Oversized images:         ' + result.PendingImageCount + '  (' + formatBytes(result.PendingSizeBytes) + ')');
                 lines.push('');

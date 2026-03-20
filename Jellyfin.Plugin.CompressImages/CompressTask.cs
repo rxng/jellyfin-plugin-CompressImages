@@ -70,14 +70,11 @@ public class CompressTask : IScheduledTask
         var quality = Math.Clamp(config.Quality, 1, 100);
         var maxFileSizeBytes = config.MaxFileSizeKB > 0 ? config.MaxFileSizeKB * 1024L : long.MaxValue;
 
-        var lastRun = config.LastRunUtc;
-        var files = FindOversizedImages(peoplePath, maxWidth, maxHeight, maxFileSizeBytes, lastRun, cancellationToken);
+        var files = FindOversizedImages(peoplePath, maxWidth, maxHeight, maxFileSizeBytes, cancellationToken);
 
         if (files.Count == 0)
         {
-            _logger.LogInformation("No oversized images found in {Path} (since {LastRun})", peoplePath, lastRun?.ToString("o", System.Globalization.CultureInfo.InvariantCulture) ?? "never");
-            config.LastRunUtc = DateTime.UtcNow;
-            Plugin.Instance!.SaveConfiguration();
+            _logger.LogInformation("No oversized images found in {Path}", peoplePath);
             progress.Report(100);
             return Task.CompletedTask;
         }
@@ -116,9 +113,6 @@ public class CompressTask : IScheduledTask
         }
 
         _logger.LogInformation("CompressImages: Compression complete. Processed: {Processed}, Failed: {Failed}", processed, failed);
-
-        config.LastRunUtc = DateTime.UtcNow;
-        Plugin.Instance!.SaveConfiguration();
 
         progress.Report(100);
         return Task.CompletedTask;
@@ -170,18 +164,11 @@ public class CompressTask : IScheduledTask
         }
     }
 
-    private List<string> FindOversizedImages(string peoplePath, int maxWidth, int maxHeight, long maxFileSizeBytes, DateTime? since, CancellationToken cancellationToken)
+    private List<string> FindOversizedImages(string peoplePath, int maxWidth, int maxHeight, long maxFileSizeBytes, CancellationToken cancellationToken)
     {
-        var candidates = Directory.EnumerateFiles(peoplePath, "*.*", SearchOption.AllDirectories)
-            .Where(f => _imageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()));
-
-        if (since.HasValue)
-        {
-            var cutoff = since.Value;
-            candidates = candidates.Where(f => File.GetLastWriteTimeUtc(f) > cutoff);
-        }
-
-        var candidateList = candidates.ToList();
+        var candidateList = Directory.EnumerateFiles(peoplePath, "*.*", SearchOption.AllDirectories)
+            .Where(f => _imageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            .ToList();
         _logger.LogInformation("CompressImages: Scanning {Count} candidate images for oversized files", candidateList.Count);
 
         var result = new List<string>();

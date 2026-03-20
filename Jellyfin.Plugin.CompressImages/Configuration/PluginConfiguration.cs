@@ -15,7 +15,7 @@ public class PluginConfiguration : BasePluginConfiguration
     {
         MaxWidth = 600;
         MaxHeight = 900;
-        Quality = 75;
+        Quality = 80;
         MaxFileSizeKB = 0;
     }
 
@@ -38,10 +38,4 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the maximum file size in KB. 0 means no file size limit (only dimensions are checked).
     /// </summary>
     public int MaxFileSizeKB { get; set; }
-
-    /// <summary>
-    /// Gets or sets the UTC timestamp of the last successful compression run.
-    /// Only images modified after this time will be checked on the next run.
-    /// </summary>
-    public DateTime? LastRunUtc { get; set; }
 }
