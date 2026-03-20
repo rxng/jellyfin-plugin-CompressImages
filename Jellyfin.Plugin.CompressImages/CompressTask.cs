@@ -24,13 +24,6 @@ public class CompressTask : IScheduledTask
     private readonly IImageEncoder _imageEncoder;
     private readonly ILogger<CompressTask> _logger;
 
-    private enum CompressResult
-    {
-        Compressed,
-        Skipped,
-        Failed
-    }
-
     /// <summary>
     /// Initializes a new instance of the <see cref="CompressTask"/> class.
     /// </summary>
@@ -59,6 +52,13 @@ public class CompressTask : IScheduledTask
     /// <inheritdoc />
     public string Category => "Image Compressor";
 
+    private enum CompressResult
+    {
+        Compressed,
+        Skipped,
+        Failed
+    }
+
     /// <inheritdoc />
     public Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
     {
@@ -80,7 +80,6 @@ public class CompressTask : IScheduledTask
 
         var files = FindOversizedImages(peoplePath, maxWidth, maxHeight, maxFileSizeBytes, cancellationToken);
 
-        
         if (files.Count == 0)
         {
             _logger.LogInformation("No oversized images found in {Path}", peoplePath);
@@ -142,9 +141,13 @@ public class CompressTask : IScheduledTask
             skipped,
             failed);
 
-        foreach (var skippedFile in skippedFiles.Take(20))
+        _logger.LogInformation("CompressImages: skippedFiles.Count={Count}", skippedFiles.Count);
+
+        if (skippedFiles.Count > 0)
         {
-            _logger.LogInformation("CompressImages: Skipped {Path}", skippedFile);
+            _logger.LogInformation(
+                "CompressImages: Skipped files: {Paths}",
+                string.Join(" | ", skippedFiles.Take(20)));
         }
 
         if (skippedFiles.Count > 20)
@@ -435,4 +438,5 @@ public class CompressTask : IScheduledTask
 
         File.Move(sourcePath, destinationPath, overwrite: true);
     }
+
 }
