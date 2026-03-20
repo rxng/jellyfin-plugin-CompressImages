@@ -24,6 +24,13 @@ public class CompressTask : IScheduledTask
     private readonly IImageEncoder _imageEncoder;
     private readonly ILogger<CompressTask> _logger;
 
+    private enum CompressResult
+    {
+        Compressed,
+        Skipped,
+        Failed
+    }
+
     /// <summary>
     /// Initializes a new instance of the <see cref="CompressTask"/> class.
     /// </summary>
@@ -51,13 +58,6 @@ public class CompressTask : IScheduledTask
 
     /// <inheritdoc />
     public string Category => "Image Compressor";
-
-    private enum CompressResult
-    {
-        Compressed,
-        Skipped,
-        Failed
-    }
 
     /// <inheritdoc />
     public Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
