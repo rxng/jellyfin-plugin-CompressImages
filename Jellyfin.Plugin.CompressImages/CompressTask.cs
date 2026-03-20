@@ -14,11 +14,16 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.CompressImages;
 
 /// <summary>
-/// The task that runs the image compression.
+/// Scheduled task that compresses oversized images in the People metadata folder.
 /// </summary>
 public class CompressTask : IScheduledTask
 {
-    private static readonly string[] _imageExtensions = [".jpg", ".jpeg", ".png"];
+    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".jpg",
+        ".jpeg",
+        ".png"
+    };
 
     private readonly IServerConfigurationManager _configManager;
     private readonly IImageEncoder _imageEncoder;
@@ -27,9 +32,6 @@ public class CompressTask : IScheduledTask
     /// <summary>
     /// Initializes a new instance of the <see cref="CompressTask"/> class.
     /// </summary>
-    /// <param name="configManager">The config manager.</param>
-    /// <param name="imageEncoder">The image encoder.</param>
-    /// <param name="logger">The logger.</param>
     public CompressTask(
         IServerConfigurationManager configManager,
         IImageEncoder imageEncoder,
@@ -61,6 +63,7 @@ public class CompressTask : IScheduledTask
         if (!Directory.Exists(peoplePath))
         {
             _logger.LogWarning("People metadata folder not found at {Path}", peoplePath);
+            progress.Report(100);
             return Task.CompletedTask;
         }
 
@@ -68,11 +71,53 @@ public class CompressTask : IScheduledTask
         var maxWidth = Math.Clamp(config.MaxWidth, 1, 10000);
         var maxHeight = Math.Clamp(config.MaxHeight, 1, 10000);
         var quality = Math.Clamp(config.Quality, 1, 100);
-        var maxFileSizeBytes = config.MaxFileSizeKB > 0 ? config.MaxFileSizeKB * 1024L : long.MaxValue;
+        var maxFileSizeBytes = config.MaxFileSizeKB > 0
+            ? config.MaxFileSizeKB * 1024L
+            : long.MaxValue;
 
-        var files = FindOversizedImages(peoplePath, maxWidth, maxHeight, maxFileSizeBytes, cancellationToken);
+        var allFiles = EnumerateCandidateImages(peoplePath).ToList();
+        if (allFiles.Count == 0)
+        {
+            _logger.LogInformation("No candidate images found in {Path}", peoplePath);
+            progress.Report(100);
+            return Task.CompletedTask;
+        }
 
-        if (files.Count == 0)
+        _logger.LogInformation(
+            "CompressImages: Scanning {Count} candidate images in {Path} with limits {Width}x{Height}, quality {Quality}, max size {MaxFileSizeBytes} bytes",
+            allFiles.Count,
+            peoplePath,
+            maxWidth,
+            maxHeight,
+            quality,
+            maxFileSizeBytes == long.MaxValue ? -1 : maxFileSizeBytes);
+
+        var oversizedFiles = new List<string>();
+        var scannedCount = 0;
+
+        foreach (var file in allFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (IsOversized(file, maxWidth, maxHeight, maxFileSizeBytes))
+            {
+                oversizedFiles.Add(file);
+            }
+
+            scannedCount++;
+            if (scannedCount % 500 == 0 || scannedCount == allFiles.Count)
+            {
+                _logger.LogInformation(
+                    "CompressImages: Scanned {Scanned}/{Total}, oversized so far: {Oversized}",
+                    scannedCount,
+                    allFiles.Count,
+                    oversizedFiles.Count);
+            }
+
+            progress.Report((double)scannedCount / allFiles.Count * 20.0);
+        }
+
+        if (oversizedFiles.Count == 0)
         {
             _logger.LogInformation("No oversized images found in {Path}", peoplePath);
             progress.Report(100);
@@ -80,26 +125,24 @@ public class CompressTask : IScheduledTask
         }
 
         _logger.LogInformation(
-            "Found {Count} oversized images in {Path} to compress to {Width}x{Height} at quality {Quality}",
-            files.Count,
-            peoplePath,
-            maxWidth,
-            maxHeight,
-            quality);
+            "CompressImages: Found {Count} oversized images to process",
+            oversizedFiles.Count);
 
-        var compressed = 0;
+        var improved = 0;
         var skipped = 0;
         var failed = 0;
 
-        foreach (var file in files)
+        for (var i = 0; i < oversizedFiles.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var result = CompressImage(file, maxWidth, maxHeight, quality);
+            var file = oversizedFiles[i];
+            var result = CompressImage(file, maxWidth, maxHeight, quality, maxFileSizeBytes);
+
             switch (result)
             {
-                case CompressResult.Compressed:
-                    compressed++;
+                case CompressResult.Improved:
+                    improved++;
                     break;
                 case CompressResult.Skipped:
                     skipped++;
@@ -109,16 +152,26 @@ public class CompressTask : IScheduledTask
                     break;
             }
 
-            var done = compressed + skipped + failed;
-            if (done % 100 == 0 || done == files.Count)
+            var done = i + 1;
+            if (done % 100 == 0 || done == oversizedFiles.Count)
             {
-                _logger.LogInformation("CompressImages: Processed {Done}/{Total} images ({Compressed} compressed, {Skipped} skipped, {Failed} failed)", done, files.Count, compressed, skipped, failed);
+                _logger.LogInformation(
+                    "CompressImages: Processed {Done}/{Total} oversized images ({Improved} improved, {Skipped} skipped, {Failed} failed)",
+                    done,
+                    oversizedFiles.Count,
+                    improved,
+                    skipped,
+                    failed);
             }
 
-            progress.Report((double)done / files.Count * 100);
+            progress.Report(20.0 + ((double)done / oversizedFiles.Count * 80.0));
         }
 
-        _logger.LogInformation("CompressImages: Complete. Compressed: {Compressed}, Skipped (already optimal): {Skipped}, Failed: {Failed}", compressed, skipped, failed);
+        _logger.LogInformation(
+            "CompressImages: Complete. Improved: {Improved}, Skipped: {Skipped}, Failed: {Failed}",
+            improved,
+            skipped,
+            failed);
 
         progress.Report(100);
         return Task.CompletedTask;
@@ -138,19 +191,14 @@ public class CompressTask : IScheduledTask
     }
 
     /// <summary>
-    /// Checks if a given image exceeds the configured dimension or file size limits.
+    /// Returns true when the image exceeds width, height, or file size limits.
     /// </summary>
-    /// <param name="path">The file path to check.</param>
-    /// <param name="maxWidth">Maximum allowed width in pixels.</param>
-    /// <param name="maxHeight">Maximum allowed height in pixels.</param>
-    /// <param name="maxFileSizeBytes">Maximum allowed file size in bytes.</param>
-    /// <returns>True if the image exceeds any of the configured limits.</returns>
     internal bool IsOversized(string path, int maxWidth, int maxHeight, long maxFileSizeBytes)
     {
         try
         {
             var fileInfo = new FileInfo(path);
-            if (fileInfo.Length == 0)
+            if (!fileInfo.Exists || fileInfo.Length == 0)
             {
                 return false;
             }
@@ -160,8 +208,8 @@ public class CompressTask : IScheduledTask
                 return true;
             }
 
-            var dims = _imageEncoder.GetImageSize(path);
-            return dims.Width > maxWidth || dims.Height > maxHeight;
+            var size = _imageEncoder.GetImageSize(path);
+            return size.Width > maxWidth || size.Height > maxHeight;
         }
         catch (Exception ex)
         {
@@ -170,103 +218,196 @@ public class CompressTask : IScheduledTask
         }
     }
 
-    private List<string> FindOversizedImages(string peoplePath, int maxWidth, int maxHeight, long maxFileSizeBytes, CancellationToken cancellationToken)
+    private IEnumerable<string> EnumerateCandidateImages(string rootPath)
     {
-        var candidateList = Directory.EnumerateFiles(peoplePath, "*.*", SearchOption.AllDirectories)
-            .Where(f => _imageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-            .ToList();
-        _logger.LogInformation("CompressImages: Scanning {Count} candidate images for oversized files", candidateList.Count);
-
-        var result = new List<string>();
-        var checked_ = 0;
-        foreach (var f in candidateList)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (IsOversized(f, maxWidth, maxHeight, maxFileSizeBytes))
-            {
-                result.Add(f);
-            }
-
-            checked_++;
-            if (checked_ % 500 == 0)
-            {
-                _logger.LogInformation("CompressImages: Scanned {Checked}/{Total} images, {Oversized} oversized so far", checked_, candidateList.Count, result.Count);
-            }
-        }
-
-        return result;
+        return Directory.EnumerateFiles(rootPath, "*.*", SearchOption.AllDirectories)
+            .Where(path => ImageExtensions.Contains(Path.GetExtension(path)));
     }
 
-    private CompressResult CompressImage(string path, int maxWidth, int maxHeight, int quality)
+    private CompressResult CompressImage(string path, int maxWidth, int maxHeight, int quality, long maxFileSizeBytes)
     {
+        string? tempPath = null;
+
         try
         {
-            var ext = Path.GetExtension(path).ToLowerInvariant();
-            var outputFormat = ext == ".png" ? ImageFormat.Png : ImageFormat.Jpg;
-
-            var tempPath = Path.Combine(
-                Path.GetTempPath(),
-                string.Concat("jfci_", Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture), ext));
-
-            try
+            var originalInfo = new FileInfo(path);
+            if (!originalInfo.Exists || originalInfo.Length == 0)
             {
-                var options = new ImageProcessingOptions
-                {
-                    MaxWidth = maxWidth,
-                    MaxHeight = maxHeight,
-                    Quality = quality,
-                    SupportedOutputFormats = [outputFormat]
-                };
+                return CompressResult.Skipped;
+            }
 
-                var result = _imageEncoder.EncodeImage(
+            var originalSizeBytes = originalInfo.Length;
+            var originalDimensions = _imageEncoder.GetImageSize(path);
+            var originalIsOversized =
+                originalDimensions.Width > maxWidth ||
+                originalDimensions.Height > maxHeight ||
+                (maxFileSizeBytes < long.MaxValue && originalSizeBytes > maxFileSizeBytes);
+                
+            if (!originalIsOversized)
+            {
+                return CompressResult.Skipped;
+            }
+
+            var extension = Path.GetExtension(path);
+            var outputFormat = string.Equals(extension, ".png", StringComparison.OrdinalIgnoreCase)
+                ? ImageFormat.Png
+                : ImageFormat.Jpg;
+
+            var directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(directory))
+            {
+                _logger.LogWarning("Could not determine directory for {Path}", path);
+                return CompressResult.Failed;
+            }
+
+            tempPath = Path.Combine(
+                directory,
+                string.Concat("jfci_", Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture), extension));
+
+            var options = new ImageProcessingOptions
+            {
+                MaxWidth = maxWidth,
+                MaxHeight = maxHeight,
+                Quality = quality,
+                SupportedOutputFormats = [outputFormat]
+            };
+
+            var encoderResultPath = _imageEncoder.EncodeImage(
+                path,
+                File.GetLastWriteTimeUtc(path),
+                tempPath,
+                autoOrient: true,
+                orientation: null,
+                quality: quality,
+                options: options,
+                outputFormat: outputFormat);
+
+            if (string.Equals(encoderResultPath, path, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogDebug("Skipping {Path}: encoder returned original path", path);
+                return CompressResult.Skipped;
+            }
+
+            if (!File.Exists(tempPath))
+            {
+                _logger.LogWarning("Skipping {Path}: encoder did not produce output file", path);
+                return CompressResult.Failed;
+            }
+
+            var newInfo = new FileInfo(tempPath);
+            if (!newInfo.Exists || newInfo.Length == 0)
+            {
+                _logger.LogWarning("Skipping {Path}: output file is missing or empty", path);
+                return CompressResult.Failed;
+            }
+
+            var newSizeBytes = newInfo.Length;
+            var newDimensions = _imageEncoder.GetImageSize(tempPath);
+
+            var meetsDimensionLimits =
+                newDimensions.Width <= maxWidth &&
+                newDimensions.Height <= maxHeight;
+
+            var meetsFileSizeLimit =
+                maxFileSizeBytes == long.MaxValue ||
+                newSizeBytes <= maxFileSizeBytes;
+
+            var dimensionsImproved =
+                newDimensions.Width < originalDimensions.Width ||
+                newDimensions.Height < originalDimensions.Height;
+
+            var sizeImproved = newSizeBytes < originalSizeBytes;
+            var sizeNotWorse = newSizeBytes <= originalSizeBytes;
+
+            var better = sizeImproved || (dimensionsImproved && sizeNotWorse);
+
+            if (!meetsDimensionLimits || !meetsFileSizeLimit)
+            {
+                _logger.LogDebug(
+                    "Skipping {Path}: output still exceeds limits. New {NewWidth}x{NewHeight}, {NewBytes} bytes",
                     path,
-                    File.GetLastWriteTimeUtc(path),
-                    tempPath,
-                    autoOrient: true,
-                    orientation: null,
-                    quality: quality,
-                    options: options,
-                    outputFormat: outputFormat);
-
-                // If encoder returned original path unchanged, no compression was needed
-                if (string.Equals(result, path, StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogDebug("Skipping {Path}: encoder returned original path (no-op)", path);
-                    return CompressResult.Skipped;
-                }
-
-                var originalSize = new FileInfo(path).Length;
-                var compressedSize = new FileInfo(tempPath).Length;
-
-                File.Move(tempPath, path, overwrite: true);
-                _logger.LogInformation("Compressed {Path}: {Original} -> {Compressed} bytes", path, originalSize, compressedSize);
-                return CompressResult.Compressed;
+                    newDimensions.Width,
+                    newDimensions.Height,
+                    newSizeBytes);
+                return CompressResult.Skipped;
             }
-            finally
+
+            if (!better)
             {
-                if (File.Exists(tempPath))
-                {
-                    try
-                    {
-                        File.Delete(tempPath);
-                    }
-                    catch (IOException)
-                    {
-                    }
-                }
+                _logger.LogDebug(
+                    "Skipping {Path}: output is not better. Original {OriginalWidth}x{OriginalHeight}, {OriginalBytes} bytes. New {NewWidth}x{NewHeight}, {NewBytes} bytes",
+                    path,
+                    originalDimensions.Width,
+                    originalDimensions.Height,
+                    originalSizeBytes,
+                    newDimensions.Width,
+                    newDimensions.Height,
+                    newSizeBytes);
+                return CompressResult.Skipped;
             }
+
+            ReplaceFile(tempPath, path);
+
+            /*_logger.LogInformation(
+                "Improved {Path}: {OriginalWidth}x{OriginalHeight}, {OriginalBytes} bytes -> {NewWidth}x{NewHeight}, {NewBytes} bytes",
+                path,
+                originalDimensions.Width,
+                originalDimensions.Height,
+                originalSizeBytes,
+                newDimensions.Width,
+                newDimensions.Height,
+                newSizeBytes);*/
+
+            tempPath = null;
+            return CompressResult.Improved;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to compress {Path}", path);
             return CompressResult.Failed;
         }
+        finally
+        {
+            if (!string.IsNullOrEmpty(tempPath) && File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+    }
+
+    private static void ReplaceFile(string sourcePath, string destinationPath)
+    {
+        try
+        {
+            File.Replace(sourcePath, destinationPath, destinationBackupName: null, ignoreMetadataErrors: true);
+            return;
+        }
+        catch (PlatformNotSupportedException)
+        {
+        }
+        catch (IOException)
+        {
+            if (!File.Exists(sourcePath))
+            {
+                throw;
+            }
+        }
+
+        File.Move(sourcePath, destinationPath, overwrite: true);
     }
 
     private enum CompressResult
     {
-        Compressed,
+        Improved,
         Skipped,
         Failed
     }
