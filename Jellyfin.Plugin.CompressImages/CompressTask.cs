@@ -19,7 +19,8 @@ namespace Jellyfin.Plugin.CompressImages;
 public class CompressTask : IScheduledTask
 {
     private static readonly string[] _imageExtensions = [".jpg", ".jpeg", ".png"];
-
+    private const long MinResizeCandidateBytes = 100 * 1024;
+    
     private readonly IServerConfigurationManager _configManager;
     private readonly IImageEncoder _imageEncoder;
     private readonly ILogger<CompressTask> _logger;
@@ -195,6 +196,11 @@ public class CompressTask : IScheduledTask
             if (maxFileSizeBytes < long.MaxValue && fileInfo.Length > maxFileSizeBytes)
             {
                 return true;
+            }
+
+            if (fileInfo.Length < MinResizeCandidateBytes)
+            {
+                return false;
             }
 
             var dims = _imageEncoder.GetImageSize(path);
