@@ -19,18 +19,10 @@ namespace Jellyfin.Plugin.CompressImages;
 public class CompressTask : IScheduledTask
 {
     private static readonly string[] _imageExtensions = [".jpg", ".jpeg", ".png"];
-    private const long MinResizeCandidateBytes = 100 * 1024;
-    
+    internal const long MinResizeCandidateBytes = 100 * 1024;
     private readonly IServerConfigurationManager _configManager;
     private readonly IImageEncoder _imageEncoder;
     private readonly ILogger<CompressTask> _logger;
-
-    private enum CompressResult
-    {
-        Compressed,
-        Skipped,
-        Failed
-    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CompressTask"/> class.
@@ -46,6 +38,13 @@ public class CompressTask : IScheduledTask
         _configManager = configManager;
         _imageEncoder = imageEncoder;
         _logger = logger;
+    }
+
+    private enum CompressResult
+    {
+        Compressed,
+        Skipped,
+        Failed
     }
 
     /// <inheritdoc />
@@ -444,5 +443,4 @@ public class CompressTask : IScheduledTask
 
         File.Move(sourcePath, destinationPath, overwrite: true);
     }
-
 }

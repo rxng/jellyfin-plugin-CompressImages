@@ -111,17 +111,19 @@ public class CompressImagesController : ControllerBase
 
                     totalSize += info.Length;
 
-                    var dims = _imageEncoder.GetImageSize(file);
-                    dimCache[file] = (dims.Width, dims.Height);
-
                     var needsCompression = false;
                     if (maxFileSizeBytes < long.MaxValue && info.Length > maxFileSizeBytes)
                     {
                         needsCompression = true;
                     }
-                    else if (dims.Width > maxWidth || dims.Height > maxHeight)
+                    else if (info.Length >= CompressTask.MinResizeCandidateBytes)
                     {
-                        needsCompression = true;
+                        var dims = _imageEncoder.GetImageSize(file);
+                        dimCache[file] = (dims.Width, dims.Height);
+                        if (dims.Width > maxWidth || dims.Height > maxHeight)
+                        {
+                            needsCompression = true;
+                        }
                     }
 
                     if (needsCompression)
