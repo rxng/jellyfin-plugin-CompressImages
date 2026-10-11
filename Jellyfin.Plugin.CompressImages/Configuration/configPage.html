@@ -148,11 +148,25 @@
 
                 var url = ApiClient.getUrl('CompressImages/Preview');
                 var token = ApiClient.accessToken();
+
+                var fetchOptions = {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    headers: {
+                        'Accept': 'application/x-ndjson, application/json'
+                    }
+                };
+
                 if (token) {
-                    url += (url.indexOf('?') >= 0 ? '&' : '?') + 'api_key=' + encodeURIComponent(token);
+                    fetchOptions.headers.Authorization =
+                        'MediaBrowser Client="Jellyfin Web", ' +
+                        'Device="Browser", ' +
+                        'DeviceId="CompressImages", ' +
+                        'Version="1.0.0", ' +
+                        'Token="' + token + '"';
                 }
 
-                fetch(url).then(function(response) {
+                fetch(url, fetchOptions).then(function(response) {
                     if (!response.ok) {
                         throw { status: response.status, statusText: response.statusText };
                     }
