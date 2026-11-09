@@ -23,7 +23,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Extract version from tag
         id: version
@@ -41,7 +41,7 @@ jobs:
 
       - name: Create plugin zip
         run: |
-          cd Jellyfin.Plugin.CompressImages/bin/Release/net9.0/publish
+          cd Jellyfin.Plugin.CompressImages/bin/Release/net10.0/publish
           zip -j "$GITHUB_WORKSPACE/compress-images-${{ github.ref_name }}.zip" Jellyfin.Plugin.CompressImages.dll
 
       - name: Compute checksum
@@ -60,7 +60,7 @@ jobs:
              --arg url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/compress-images-${{ github.ref_name }}.zip" \
              --arg md5 "${{ steps.checksum.outputs.md5 }}" \
              --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-             '.[0].versions = [{"version": $ver, "changelog": ("Release " + $ver), "targetAbi": "10.11.0.0", "sourceUrl": $url, "checksum": $md5, "timestamp": $ts}] + [.[0].versions[] | select(.version != $ver)]' \
+             '.[0].versions = [{"version": $ver, "changelog": ("Release " + $ver), "targetAbi": "12.0.0.0", "sourceUrl": $url, "checksum": $md5, "timestamp": $ts}] + [.[0].versions[] | select(.version != $ver)]' \
              manifest.json > manifest.tmp && mv manifest.tmp manifest.json
 
       - name: Commit updated manifest

@@ -147,12 +147,13 @@
                 btn.disabled = true;
 
                 var url = ApiClient.getUrl('CompressImages/Preview');
+                var headers = {};
                 var token = ApiClient.accessToken();
                 if (token) {
-                    url += (url.indexOf('?') >= 0 ? '&' : '?') + 'api_key=' + encodeURIComponent(token);
+                    headers['Authorization'] = 'MediaBrowser Token="' + token + '"';
                 }
 
-                fetch(url).then(function(response) {
+                fetch(url, { headers: headers }).then(function(response) {
                     if (!response.ok) {
                         throw { status: response.status, statusText: response.statusText };
                     }

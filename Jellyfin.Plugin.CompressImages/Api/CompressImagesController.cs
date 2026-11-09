@@ -66,11 +66,6 @@ public class CompressImagesController : ControllerBase
 
             if (peoplePath is null || !Directory.Exists(peoplePath))
             {
-                var notFound = new PreviewResult
-                {
-                    PeoplePath = peoplePath ?? "Unknown",
-                    Exists = false
-                };
                 await SendLine(new { Error = "Preview failed." }, cancellationToken).ConfigureAwait(false);
                 return;
             }
@@ -228,12 +223,7 @@ public class CompressImagesController : ControllerBase
 
     private string? GetPeoplePath()
     {
-        var metadataPath = _configManager.ApplicationPaths.InternalMetadataPath;
-        if (string.IsNullOrEmpty(metadataPath))
-        {
-            return null;
-        }
-
-        return Path.Combine(metadataPath, "People");
+        var peoplePath = _configManager.ApplicationPaths.PeoplePath;
+        return string.IsNullOrEmpty(peoplePath) ? null : peoplePath;
     }
 }

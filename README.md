@@ -15,7 +15,7 @@ A Jellyfin plugin that automatically compresses oversized images in the **People
 
 ## Requirements
 
-- **Jellyfin 10.11.0 or later**
+- **Jellyfin 12.0 or later** (use plugin version 1.0.x for Jellyfin 10.11)
 
 ## Installation
 
@@ -60,7 +60,7 @@ cd jellyfin-plugin-CompressImages
 dotnet publish --configuration=Release Jellyfin.Plugin.CompressImages.sln
 ```
 
-The compiled DLL will be at `Jellyfin.Plugin.CompressImages/bin/Release/net9.0/publish/Jellyfin.Plugin.CompressImages.dll`.
+The compiled DLL will be at `Jellyfin.Plugin.CompressImages/bin/Release/net10.0/publish/Jellyfin.Plugin.CompressImages.dll`.
 
 ## License
 

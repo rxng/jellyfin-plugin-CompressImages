@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Configuration;
@@ -62,8 +63,7 @@ public class CompressTask : IScheduledTask
     /// <inheritdoc />
     public Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
     {
-        var metadataPath = _configManager.ApplicationPaths.InternalMetadataPath;
-        var peoplePath = Path.Combine(metadataPath, "People");
+        var peoplePath = _configManager.ApplicationPaths.PeoplePath;
 
         if (!Directory.Exists(peoplePath))
         {
@@ -272,6 +272,7 @@ public class CompressTask : IScheduledTask
     private CompressResult CompressImage(string path, int maxWidth, int maxHeight, int quality, long maxFileSizeBytes)
     {
         string? tempPath = null;
+        string? asciiInputPath = null;
 
         try
         {
@@ -316,8 +317,21 @@ public class CompressTask : IScheduledTask
                 SupportedOutputFormats = [outputFormat]
             };
 
+            // Jellyfin's encoder copies non-ASCII input paths to its temp folder and never deletes the copy.
+            var encodeInputPath = path;
+            if (!Ascii.IsValid(path))
+            {
+                var workDir = Path.Combine(_configManager.ApplicationPaths.TempDirectory, "compressimages");
+                Directory.CreateDirectory(workDir);
+                asciiInputPath = Path.Combine(
+                    workDir,
+                    string.Concat(Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture), ext));
+                File.Copy(path, asciiInputPath);
+                encodeInputPath = asciiInputPath;
+            }
+
             var result = _imageEncoder.EncodeImage(
-                path,
+                encodeInputPath,
                 File.GetLastWriteTimeUtc(path),
                 tempPath,
                 autoOrient: true,
@@ -326,7 +340,7 @@ public class CompressTask : IScheduledTask
                 options: options,
                 outputFormat: outputFormat);
 
-            if (string.Equals(result, path, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(result, encodeInputPath, StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogDebug("Skipping {Path}: encoder returned original path (no-op)", path);
                 return CompressResult.Skipped;
@@ -347,6 +361,13 @@ public class CompressTask : IScheduledTask
 
             var compressedSizeBytes = compressedInfo.Length;
             var compressedDimensions = _imageEncoder.GetImageSize(tempPath);
+
+            // GetImageSize returns 0x0 instead of throwing when the file can't be decoded.
+            if (compressedDimensions.Width <= 0 || compressedDimensions.Height <= 0)
+            {
+                _logger.LogWarning("Failed to compress {Path}: encoded output could not be read back", path);
+                return CompressResult.Failed;
+            }
 
             var meetsDimensionLimits =
                 compressedDimensions.Width <= maxWidth &&
@@ -402,19 +423,27 @@ public class CompressTask : IScheduledTask
         }
         finally
         {
-            if (!string.IsNullOrEmpty(tempPath) && File.Exists(tempPath))
-            {
-                try
-                {
-                    File.Delete(tempPath);
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
-            }
+            TryDeleteFile(tempPath);
+            TryDeleteFile(asciiInputPath);
+        }
+    }
+
+    private static void TryDeleteFile(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 
